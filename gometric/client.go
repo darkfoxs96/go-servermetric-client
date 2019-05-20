@@ -1,4 +1,4 @@
-package main
+package gometric
 
 import (
 	"bytes"
@@ -38,25 +38,20 @@ type Client struct {
 	key              string
 	alreadyConnect   bool
 	id               int64
-	metrics          map[string][][]interface{}
+	metrics          map[string]*MetricData
 	metricsMutex     sync.RWMutex
 	ctx              context.Context
 	stop             context.CancelFunc
 }
 
-func (c *Client) RunPusher(fn func(ev EventPush), ctx context.Context, stop context.CancelFunc) {
-	c.ctx, c.stop = ctx, stop
-	if c.ctx == nil {
-		c.ctx, c.stop = context.WithCancel(context.Background())
-	}
-
+func (c *Client) RunPusher(fn func(ev EventPush)) {
 	for {
 		select {
-		case <-ctx.Done():
+		case <-c.ctx.Done():
 			if fn != nil {
-				fn(EventPush{0, ctx.Err()})
+				fn(EventPush{0, c.ctx.Err()})
 			}
-			break
+			return
 		case <-time.After(c.PushEvery):
 			ping, err := c.PushMetrics()
 			if fn != nil {
@@ -72,17 +67,22 @@ func (c *Client) Stop() {
 	}
 }
 
-func (c *Client) AppendMetric(name string, data []interface{}) (err error) {
+func (c *Client) AppendMetric(name string, fields string, types []string, data ...interface{}) (err error) {
 	defer c.metricsMutex.Unlock()
 	c.metricsMutex.Lock()
 
 	metric := c.metrics[name]
 	if metric == nil {
-		metric = make([][]interface{}, 0)
+		metric = &MetricData{
+			Fields: fields,
+			Types:  types,
+			Data:   [][]interface{}{data},
+		}
 		c.metrics[name] = metric
+		return
 	}
 
-	metric = append(metric, data)
+	metric.Data = append(metric.Data, data)
 	return
 }
 
@@ -97,7 +97,7 @@ func (c *Client) PushMetrics() (ping int64, err error) {
 		return
 	}
 
-	c.clearMetrics()
+	c.ClearMetrics()
 	return
 }
 
@@ -132,14 +132,19 @@ func (c *Client) pushMetrics() (err error) {
 		return ErrBadKey
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Servermetric-client: pushMetrics() status response %v", resp.StatusCode)
+		e := &Error{}
+		decoder := json.NewDecoder(resp.Body)
+		err = decoder.Decode(e)
+		_ = resp.Body.Close()
+
+		return fmt.Errorf("Servermetric-client: pushMetrics() status response %v, body: ", resp.StatusCode, e.Msg)
 	}
 
 	return
 }
 
-func (c *Client) clearMetrics() {
-	c.metrics = make(map[string][][]interface{})
+func (c *Client) ClearMetrics() {
+	c.metrics = make(map[string]*MetricData)
 }
 
 func (c *Client) Ping() (ping int64, err error) {
