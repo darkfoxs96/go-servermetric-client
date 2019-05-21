@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,12 +45,21 @@ type Client struct {
 	stop             context.CancelFunc
 }
 
+func (c *Client) IsConnected() bool {
+	return c.alreadyConnect
+}
+
 func (c *Client) RunPusher(fn func(ev EventPush)) {
 	for {
 		select {
 		case <-c.ctx.Done():
+			err := c.Disconnect()
 			if fn != nil {
-				fn(EventPush{0, c.ctx.Err()})
+				if err != nil {
+					fn(EventPush{0, err})
+				} else {
+					fn(EventPush{0, c.ctx.Err()})
+				}
 			}
 			return
 		case <-time.After(c.PushEvery):
@@ -67,15 +77,16 @@ func (c *Client) Stop() {
 	}
 }
 
-func (c *Client) AppendMetric(name string, fields string, types []string, data ...interface{}) (err error) {
+func (c *Client) AppendMetric(name string, fields string, types string, data ...interface{}) (err error) {
 	defer c.metricsMutex.Unlock()
 	c.metricsMutex.Lock()
 
 	metric := c.metrics[name]
 	if metric == nil {
+		newV := strings.Replace(types, " ", "", -1)
 		metric = &MetricData{
 			Fields: fields,
-			Types:  types,
+			Types:  strings.Split(newV, ","),
 			Data:   [][]interface{}{data},
 		}
 		c.metrics[name] = metric
